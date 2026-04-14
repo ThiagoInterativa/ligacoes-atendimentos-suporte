@@ -185,7 +185,7 @@ def gerar_ranking(dados):
 
 # ===== INTERFACE STREAMLIT =====
 
-st.title("📊 Dashboard gestão de atendimento - Helpdesk")
+st.title("📊 Dashboard de ligações - Helpdesk")
 
 with st.form("form"):
     col1, col2, col3 = st.columns(3)
@@ -227,13 +227,23 @@ if submit:
                 col3.metric("TMA (min)", resultado["tma"])
 
                 # ===== ALERTAS =====
-                if resultado["alertas"]:
-                    st.markdown("### 🚨 Chamadas acima de 20 minutos")
+if resultado["alertas"]:
+    st.markdown("### 🚨 Chamadas acima de 20 minutos")
+    
+    # Criamos uma string para acumular os alertas
+    conteudo_alertas = ""
+    for a in resultado["alertas"]:
+        conteudo_alertas += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
 
-                    for a in resultado["alertas"]:
-                        st.write(
-                            f"Técnico: **{a['tecnico']}** - Duração: **{a['duracao']}**"
-                        )
+    # Exibimos tudo dentro de uma única div com o estilo desejado
+    st.markdown(
+        f"""
+        <div style="background-color: #F7D7DA; padding: 15px; border-radius: 10px; border: 1px solid #f5c2c7; color: #842029;">
+            {conteudo_alertas}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
                 # ===== RANKING =====
                 if ranking:

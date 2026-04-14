@@ -251,10 +251,3 @@ if submit:
     except Exception as e:
         st.error(f"Ocorreu um erro: {e}")
         
-                # ===== RANKING =====
-                if ranking:
-                    st.markdown("### 🏆 Ranking de Técnicos")
-                    st.table(ranking)
-
-    except Exception as e:
-        st.error(str(e))

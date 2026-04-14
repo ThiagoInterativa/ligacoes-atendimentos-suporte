@@ -226,7 +226,7 @@ if submit:
                 col2.metric("Tempo Total (h)", resultado["tempo_total"])
                 col3.metric("TMA (min)", resultado["tma"])
 
-                # ===== ALERTAS (Agora dentro da indentação correta) =====
+                # ===== ALERTAS =====
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
                     
@@ -250,4 +250,3 @@ if submit:
 
     except Exception as e:
         st.error(f"Ocorreu um erro: {e}")
-        

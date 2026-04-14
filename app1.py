@@ -9,8 +9,8 @@ from datetime import datetime
 login_url = "https://pabx.evence.com.br/login"
 cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
 
-email = ""
-senha = ""
+email = "suporte@interativanet.com.br"
+senha = "smk03657"
 
 # ===== LOGIN =====
 def login_pabx():
@@ -185,7 +185,7 @@ def gerar_ranking(dados):
 
 # ===== INTERFACE STREAMLIT =====
 
-st.title("📊 Dashboard Gestão do Helpdesk")
+st.title("📊 Dashboard gestão de atendimento - Helpdesk")
 
 with st.form("form"):
     col1, col2, col3 = st.columns(3)
@@ -199,7 +199,7 @@ with st.form("form"):
     with col3:
         tecnico = st.selectbox(
             "Técnico",
-            ["", "102", "103", "105", "106", "109"]
+            ["", "102", "103", "105", "106", "Lima"]
         )
 
     submit = st.form_submit_button("🔍 Consultar")

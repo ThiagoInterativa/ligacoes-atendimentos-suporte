@@ -226,25 +226,31 @@ if submit:
                 col2.metric("Tempo Total (h)", resultado["tempo_total"])
                 col3.metric("TMA (min)", resultado["tma"])
 
-                # ===== ALERTAS =====
-if resultado["alertas"]:
-    st.markdown("### 🚨 Chamadas acima de 20 minutos")
-    
-    # Criamos uma string para acumular os alertas
-    conteudo_alertas = ""
-    for a in resultado["alertas"]:
-        conteudo_alertas += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
+                # ===== ALERTAS (Agora dentro da indentação correta) =====
+                if resultado["alertas"]:
+                    st.markdown("### 🚨 Chamadas acima de 20 minutos")
+                    
+                    conteudo_alertas = ""
+                    for a in resultado["alertas"]:
+                        conteudo_alertas += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
 
-    # Exibimos tudo dentro de uma única div com o estilo desejado
-    st.markdown(
-        f"""
-        <div style="background-color: #F7D7DA; padding: 15px; border-radius: 10px; border: 1px solid #f5c2c7; color: #842029;">
-            {conteudo_alertas}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+                    st.markdown(
+                        f"""
+                        <div style="background-color: #F7D7DA; padding: 15px; border-radius: 10px; border: 1px solid #f5c2c7; color: #842029;">
+                            {conteudo_alertas}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
+                # ===== RANKING =====
+                if ranking:
+                    st.markdown("### 🏆 Ranking de Técnicos")
+                    st.table(ranking)
+
+    except Exception as e:
+        st.error(f"Ocorreu um erro: {e}")
+        
                 # ===== RANKING =====
                 if ranking:
                     st.markdown("### 🏆 Ranking de Técnicos")

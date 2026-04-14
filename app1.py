@@ -199,7 +199,7 @@ with st.form("form"):
     with col3:
         tecnico = st.selectbox(
             "Técnico",
-            ["Todos", "Leonardo", "Matheus", "Ramon", "Vinicius", "Lima", "Gabriel"]
+            ["", "Leonardo", "Matheus", "Ramon", "Vinicius", "Lima", "Gabriel"]
         )
 
     submit = st.form_submit_button("🔍 Consultar")

@@ -16,11 +16,16 @@ email = "suporte@interativanet.com.br"
 senha = "smk03657"
 
 
+
 # =========================================================
-# SESSÃO REUTILIZÁVEL
+# SESSÃO (IMPORTANTE: NÃO USAR CACHE AQUI)
 # =========================================================
-@st.cache_resource
 def get_session():
+    """
+    🔥 IMPORTANTE:
+    NÃO usar cache de sessão aqui porque o cookie do PABX expira
+    e quebra exportação (causa do 'nenhum dado encontrado')
+    """
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0"
@@ -29,7 +34,7 @@ def get_session():
 
 
 # =========================================================
-# LOGIN (MANTIDO ORIGINAL)
+# LOGIN
 # =========================================================
 def login_pabx():
     session = get_session()
@@ -55,15 +60,9 @@ def login_pabx():
 
 
 # =========================================================
-# 🔥 NOVA FUNÇÃO ULTRA ROBUSTA DE LEITURA CSV
+# BUSCA CDR (CSV + VALIDAÇÃO DE SESSÃO)
 # =========================================================
 def buscar_cdr(data_inicio, data_fim):
-    """
-    NOVA VERSÃO:
-    - suporta CSV quebrado do PABX
-    - detecta TAB / ; / espaços automaticamente
-    - evita perda de dados (problema anterior)
-    """
 
     session = login_pabx()
 
@@ -85,24 +84,24 @@ def buscar_cdr(data_inicio, data_fim):
     with st.spinner("📥 Baixando relatório do PABX..."):
         r = session.get(export_url, params=params, timeout=120)
 
-    if r.status_code != 200:
-        raise Exception("Erro ao baixar CSV")
+    # =========================================================
+    # 🔥 VALIDAÇÃO CRÍTICA (EVITA "NENHUM DADO" FALSO)
+    # =========================================================
+    if not r.text or "<html" in r.text.lower() or "login" in r.text.lower():
+        raise Exception("Exportação falhou: sessão inválida ou login expirado")
 
     # =========================================================
-    # 🔥 PARSER ROBUSTO (CORREÇÃO PRINCIPAL)
+    # PARSER ROBUSTO DO CSV (TAB / ; / QUEBRADO)
     # =========================================================
     dados = []
 
     linhas = r.text.splitlines()
-
     if not linhas:
         return []
 
     header = linhas[0]
 
-    # =========================================================
-    # DETECÇÃO DE SEPARADOR
-    # =========================================================
+    # detecta separador
     if "\t" in header:
         sep = "\t"
     elif ";" in header:
@@ -111,7 +110,7 @@ def buscar_cdr(data_inicio, data_fim):
         sep = None
 
     # =========================================================
-    # CASO CSV NORMAL (TAB OU ;)
+    # CASO CSV NORMAL
     # =========================================================
     if sep:
         cols = [c.strip().replace(":", "") for c in header.split(sep)]
@@ -129,7 +128,7 @@ def buscar_cdr(data_inicio, data_fim):
                 tipo = str(row.get("Tipo", "")).strip()
                 duracao = str(row.get("Duracao", "00:00:00")).strip()
 
-                if not duracao or ":" not in duracao:
+                if ":" not in duracao:
                     continue
 
                 if status == "":
@@ -150,7 +149,7 @@ def buscar_cdr(data_inicio, data_fim):
                 continue
 
     # =========================================================
-    # FALLBACK (CASO CSV VENHA QUEBRADO DO PABX)
+    # FALLBACK (CSV QUEBRADO)
     # =========================================================
     else:
         for linha in linhas[1:]:
@@ -264,7 +263,7 @@ def gerar_ranking(dados):
 
 
 # =========================================================
-# INTERFACE STREAMLIT
+# STREAMLIT UI
 # =========================================================
 
 st.title("📊 Dashboard de ligações - Helpdesk")
@@ -287,16 +286,12 @@ with st.form("form"):
     submit = st.form_submit_button("🔍 Consultar")
 
 
-# =========================================================
-# EXECUÇÃO
-# =========================================================
-
 if submit:
     try:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
-
         else:
+
             data_inicio_str = data_inicio.strftime("%d-%m-%Y")
             data_fim_str = data_fim.strftime("%d-%m-%Y")
 
@@ -304,7 +299,6 @@ if submit:
 
             if not dados:
                 st.error("Nenhum dado encontrado")
-
             else:
                 resultado = calcular_kpi(dados, tecnico)
                 ranking = gerar_ranking(dados)

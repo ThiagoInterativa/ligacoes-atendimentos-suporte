@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ===== CONFIG =====
 login_url = "https://pabx.evence.com.br/login"
@@ -12,15 +13,12 @@ cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
 email = "suporte@interativanet.com.br"
 senha = "smk03657"
 
+
 # =========================================================
-# CACHE GLOBAL DE SESSÃO (evita múltiplos logins)
+# CACHE DE SESSÃO (evita múltiplos logins)
 # =========================================================
 @st.cache_resource
 def get_session():
-    """
-    Cria uma sessão HTTP persistente.
-    Isso reduz drasticamente tempo de login repetido.
-    """
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0"
@@ -30,16 +28,9 @@ def get_session():
 
 # ===== LOGIN =====
 def login_pabx():
-    """
-    Realiza login no PABX.
-    Mantida lógica original, porém reutilizando sessão cacheada.
-    """
     session = get_session()
 
-    # Timeout evita travamento infinito
     r = session.get(login_url, timeout=30)
-
-    # lxml é mais rápido que html.parser
     soup = BeautifulSoup(r.text, "lxml")
 
     csrf_input = soup.find("input", {"name": "_token"})
@@ -60,14 +51,52 @@ def login_pabx():
 
 
 # =========================================================
-# CACHE DOS DADOS (MAIOR GANHO DE PERFORMANCE)
-# TTL = 1 hora (ajuste se quiser)
+# FUNÇÃO AUXILIAR PARA PARALELISMO (NÃO ALTERA SUA LÓGICA)
+# =========================================================
+def buscar_pagina(session, payload, headers, pagina):
+    """
+    Busca uma página específica.
+    Usada em paralelo para acelerar processamento.
+    """
+    payload_local = payload.copy()
+    payload_local["page"] = pagina
+
+    r = session.get(cdr_url, params=payload_local, headers=headers, timeout=30)
+
+    soup = BeautifulSoup(r.text, "lxml")
+    rows = soup.select("table tbody tr")
+
+    dados_pagina = []
+
+    for row in rows:
+        cols = row.find_all("td")
+
+        if len(cols) >= 6:
+            tecnico = cols[4].get_text(strip=True)
+            duracao = cols[5].get_text(strip=True)
+
+            h, m, s = duracao.split(":")
+            segundos = int(h) * 3600 + int(m) * 60 + int(s)
+
+            dados_pagina.append({
+                "tecnico": tecnico,
+                "duracao": duracao,
+                "segundos": segundos
+            })
+
+    return dados_pagina, len(rows)
+
+
+# =========================================================
+# CACHE DE DADOS
 # =========================================================
 @st.cache_data(ttl=3600)
 def buscar_cdr(data_inicio, data_fim):
     """
-    Busca dados do CDR.
-    Cache evita refazer requisições pesadas.
+    Versão otimizada:
+    - Paralelismo de páginas
+    - Barra de progresso inteligente
+    - Mantém lógica original
     """
 
     session = login_pabx()
@@ -102,65 +131,85 @@ def buscar_cdr(data_inicio, data_fim):
     }
 
     dados = []
+
+    # =====================================================
+    # COMPONENTES DE UI (PROGRESSO)
+    # =====================================================
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
     pagina = 1
+    paginas_lote = 5  # quantidade de páginas paralelas por ciclo
+    max_workers = 5   # threads simultâneas (não subir muito)
 
-    while True:
-        payload["page"] = pagina
+    terminou = False
+    total_processado = 0
+    estimativa_total = 20  # começa com chute e vai ajustando
 
-        # Timeout evita travamento em rede lenta
-        r = session.get(cdr_url, params=payload, headers=headers, timeout=30)
+    # =====================================================
+    # LOOP PRINCIPAL EM LOTES PARA CONTROLE
+    # =====================================================
+    while not terminou:
 
-        # PRINTS reduzidos (impacto grande em performance)
-        # print(f"📄 Página: {pagina}")
+        futures = []
 
-        soup = BeautifulSoup(r.text, "lxml")
-        rows = soup.select("table tbody tr")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
 
-        if not rows:
-            break
+            # dispara lote de páginas
+            for i in range(paginas_lote):
+                futures.append(
+                    executor.submit(
+                        buscar_pagina,
+                        session,
+                        payload,
+                        headers,
+                        pagina + i
+                    )
+                )
 
-        # OTIMIZAÇÃO: evitar acessar lista várias vezes
-        append_dados = dados.append
+            # coleta resultados conforme terminam
+            for future in as_completed(futures):
+                dados_pagina, qtd = future.result()
 
-        for row in rows:
-            cols = row.find_all("td")
+                if qtd == 0:
+                    terminou = True
+                    break
 
-            if len(cols) >= 6:
-                tecnico = cols[4].get_text(strip=True)
-                duracao = cols[5].get_text(strip=True)
+                dados.extend(dados_pagina)
+                total_processado += 1
 
-                # Conversão otimizada
-                h, m, s = duracao.split(":")
-                segundos = int(h) * 3600 + int(m) * 60 + int(s)
+        pagina += paginas_lote
 
-                append_dados({
-                    "tecnico": tecnico,
-                    "duracao": duracao,
-                    "segundos": segundos
-                })
+        # =================================================
+        # AJUSTE DINÂMICO DE PROGRESSO
+        # =================================================
+        if total_processado > estimativa_total * 0.8:
+            estimativa_total *= 2  # aumenta previsão conforme cresce
 
-        pagina += 1
+        progresso = min(total_processado / estimativa_total, 1.0)
+
+        progress_bar.progress(progresso)
+        status_text.text(f"🔄 Processando páginas... ({total_processado} páginas lidas)")
+
+    # Finaliza barra
+    progress_bar.progress(1.0)
+    status_text.text(f"✅ Concluído! Total de páginas: {total_processado}")
 
     return dados
 
 
 # ===== KPI =====
 def calcular_kpi(dados, tecnico=None):
-    """
-    Mantida lógica original.
-    Pequena otimização de acesso local de variáveis.
-    """
     total = 0
     tempo_total = 0
     alertas = []
 
     for d in dados:
-        tecnico_nome = d["tecnico"]
 
-        if tecnico and tecnico not in tecnico_nome:
+        if tecnico and tecnico not in d["tecnico"]:
             continue
 
-        if "Fila" in tecnico_nome:
+        if "Fila" in d["tecnico"]:
             continue
 
         total += 1
@@ -168,7 +217,7 @@ def calcular_kpi(dados, tecnico=None):
 
         if d["segundos"] > 1200:
             alertas.append({
-                "tecnico": tecnico_nome,
+                "tecnico": d["tecnico"],
                 "duracao": d["duracao"]
             })
 
@@ -184,16 +233,14 @@ def calcular_kpi(dados, tecnico=None):
 
 # ===== RANKING =====
 def gerar_ranking(dados):
-    """
-    Mantida lógica original com leve otimização.
-    """
     ranking = {}
 
     for d in dados:
-        tecnico = d["tecnico"]
 
-        if "Fila" in tecnico:
+        if "Fila" in d["tecnico"]:
             continue
+
+        tecnico = d["tecnico"]
 
         if tecnico not in ranking:
             ranking[tecnico] = {
@@ -207,14 +254,11 @@ def gerar_ranking(dados):
     resultado = []
 
     for tecnico, info in ranking.items():
-        chamadas = info["chamadas"]
-        tempo = info["tempo"]
-
-        tma = tempo / chamadas if chamadas > 0 else 0
+        tma = info["tempo"] / info["chamadas"] if info["chamadas"] > 0 else 0
 
         resultado.append({
             "tecnico": tecnico,
-            "chamadas": chamadas,
+            "chamadas": info["chamadas"],
             "tma": round(tma / 60, 2)
         })
 
@@ -252,7 +296,8 @@ if submit:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
         else:
-            dados = buscar_cdr(str(data_inicio), str(data_fim))
+            with st.spinner("🔄 Carregando dados, aguarde..."):
+                dados = buscar_cdr(str(data_inicio), str(data_fim))
 
             if not dados:
                 st.error("Nenhum dado encontrado")

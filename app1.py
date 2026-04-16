@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import time
 
+
 # ===== CONFIG =====
 login_url = "https://pabx.evence.com.br/login"
 cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
@@ -31,7 +32,7 @@ def login_pabx():
     session = get_session()
 
     r = session.get(login_url, timeout=120)
-    soup = BeautifulSoup(r.text, "html.parser")  # mantém compatibilidade
+    soup = BeautifulSoup(r.text, "html.parser")
 
     csrf_input = soup.find("input", {"name": "_token"})
     csrf_token = csrf_input["value"] if csrf_input else ""
@@ -51,33 +52,27 @@ def login_pabx():
 
 
 # =========================================================
-# FUNÇÃO DE RETRY (NOVA - NÃO ALTERA LÓGICA EXISTENTE)
+# FUNÇÃO DE RETRY
 # =========================================================
 def request_com_retry(session, url, params, headers, tentativas=3):
-    """
-    Faz requisição com retry automático em caso de timeout.
-    Evita quebra do sistema em páginas lentas do PABX.
-    """
     for tentativa in range(tentativas):
         try:
             return session.get(url, params=params, headers=headers, timeout=120)
         except requests.exceptions.Timeout:
             if tentativa < tentativas - 1:
-                time.sleep(1)  # pequena pausa antes de tentar novamente
+                time.sleep(1)
             else:
                 raise
 
 
 # =========================================================
-# FUNÇÃO PRINCIPAL (COM PROGRESSO FUNCIONAL)
+# FUNÇÃO PRINCIPAL (COM PROGRESSO CONTROLADO)
 # =========================================================
-def buscar_cdr(data_inicio, data_fim):
+def buscar_cdr(data_inicio, data_fim, progress_container=None):
     """
-    Busca dados do CDR de forma sequencial.
-    Inclui:
-    - Barra de progresso
-    - Retry automático
-    - Timeout aumentado
+    Busca dados com:
+    - progresso visual controlado
+    - limpeza da UI ao final
     """
 
     session = login_pabx()
@@ -113,23 +108,24 @@ def buscar_cdr(data_inicio, data_fim):
 
     dados = []
     pagina = 1
+    total_paginas_estimado = 70
 
     # =====================================================
-    # COMPONENTES DE PROGRESSO
+    # PROGRESSO CONTROLADO EM CONTAINER (IMPORTANTE)
     # =====================================================
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    total_paginas_estimado = 70  # ajuste conforme histórico real
+    if progress_container:
+        progress_bar = progress_container.progress(0)
+        status_text = progress_container.empty()
+    else:
+        progress_bar = None
+        status_text = None
 
     while True:
         payload["page"] = pagina
 
-        status_text.text(f"📄 Carregando página {pagina} de ~{total_paginas_estimado}")
+        if status_text:
+            status_text.text(f"📄 Carregando página {pagina} de ~{total_paginas_estimado}")
 
-        # =================================================
-        # REQUISIÇÃO COM RETRY (ESTÁVEL)
-        # =================================================
         r = request_com_retry(session, cdr_url, payload, headers)
 
         soup = BeautifulSoup(r.text, "html.parser")
@@ -156,27 +152,26 @@ def buscar_cdr(data_inicio, data_fim):
                     "segundos": segundos
                 })
 
-        # =================================================
-        # ATUALIZA PROGRESSO
-        # =================================================
-        progresso = min(pagina / total_paginas_estimado, 1.0)
-        progress_bar.progress(progresso)
+        if progress_bar:
+            progresso = min(pagina / total_paginas_estimado, 1.0)
+            progress_bar.progress(progresso)
 
         pagina += 1
-
-        # pequena pausa para não sobrecarregar o PABX
         time.sleep(0.2)
 
-    progress_bar.progress(1.0)
-    status_text.text(f"✅ Finalizado! Total de páginas: {pagina - 1}")
+    # =====================================================
+    # LIMPA A BARRA (DESAPARECE DA TELA)
+    # =====================================================
+    if progress_container:
+        progress_container.empty()
 
     return dados
 
 
 # =========================================================
-# CACHE DE DADOS (SEPARADO → NÃO QUEBRA PROGRESSO)
+# CACHE (SEM MOSTRAR "RUNNING")
 # =========================================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def buscar_cdr_cache(data_inicio, data_fim):
     return buscar_cdr(data_inicio, data_fim)
 
@@ -250,7 +245,7 @@ def gerar_ranking(dados):
     return resultado
 
 
-# ===== INTERFACE STREAMLIT =====
+# ===== INTERFACE =====
 
 st.title("📊 Dashboard de ligações - Helpdesk")
 
@@ -279,8 +274,10 @@ if submit:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
         else:
-            with st.spinner("🔄 Carregando dados, aguarde..."):
-                dados = buscar_cdr_cache(str(data_inicio), str(data_fim))
+            # container exclusivo para progresso (permite limpar depois)
+            progress_container = st.empty()
+
+            dados = buscar_cdr(str(data_inicio), str(data_fim), progress_container)
 
             if not dados:
                 st.error("Nenhum dado encontrado")

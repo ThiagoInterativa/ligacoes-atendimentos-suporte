@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import time
 
-
 # ===== CONFIG =====
 login_url = "https://pabx.evence.com.br/login"
 cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
@@ -16,7 +15,7 @@ senha = "smk03657"
 
 
 # =========================================================
-# CACHE DE SESSÃO (evita múltiplos logins)
+# SESSÃO REUTILIZÁVEL (evita múltiplos logins)
 # =========================================================
 @st.cache_resource
 def get_session():
@@ -27,7 +26,9 @@ def get_session():
     return session
 
 
-# ===== LOGIN =====
+# =========================================================
+# LOGIN NO PABX (TIMEOUT 120)
+# =========================================================
 def login_pabx():
     session = get_session()
 
@@ -52,27 +53,31 @@ def login_pabx():
 
 
 # =========================================================
-# FUNÇÃO DE RETRY
+# RETRY (EVITA TIMEOUT QUEBRAR EXECUÇÃO)
 # =========================================================
-def request_com_retry(session, url, params, headers, tentativas=3):
-    for tentativa in range(tentativas):
+def request_com_retry(session, url, params, headers, tentativas=4):
+    """
+    Faz retry automático em caso de timeout ou falha de rede.
+    """
+    for i in range(tentativas):
         try:
             return session.get(url, params=params, headers=headers, timeout=120)
         except requests.exceptions.Timeout:
-            if tentativa < tentativas - 1:
-                time.sleep(1)
-            else:
+            if i == tentativas - 1:
                 raise
+            time.sleep(2)
 
 
 # =========================================================
-# FUNÇÃO PRINCIPAL (COM PROGRESSO CONTROLADO)
+# BUSCA CDR (SEM CACHE PARA NÃO QUEBRAR UI)
 # =========================================================
-def buscar_cdr(data_inicio, data_fim, progress_container=None):
+def buscar_cdr(data_inicio, data_fim, progress_ui=None):
     """
-    Busca dados com:
-    - progresso visual controlado
-    - limpeza da UI ao final
+    Função principal de busca.
+    Mantém lógica original e adiciona:
+    - timeout 120
+    - retry
+    - barra de progresso limpa ao final
     """
 
     session = login_pabx()
@@ -108,23 +113,24 @@ def buscar_cdr(data_inicio, data_fim, progress_container=None):
 
     dados = []
     pagina = 1
-    total_paginas_estimado = 70
 
     # =====================================================
-    # PROGRESSO CONTROLADO EM CONTAINER (IMPORTANTE)
+    # UI DE PROGRESSO (CONTROLADA E REMOVÍVEL)
     # =====================================================
-    if progress_container:
-        progress_bar = progress_container.progress(0)
-        status_text = progress_container.empty()
+    if progress_ui:
+        progress_bar = progress_ui.progress(0)
+        status_text = progress_ui.empty()
     else:
         progress_bar = None
         status_text = None
+
+    total_estimado = 70
 
     while True:
         payload["page"] = pagina
 
         if status_text:
-            status_text.text(f"📄 Carregando página {pagina} de ~{total_paginas_estimado}")
+            status_text.text(f"📄 Processando página {pagina}")
 
         r = request_com_retry(session, cdr_url, payload, headers)
 
@@ -134,7 +140,7 @@ def buscar_cdr(data_inicio, data_fim, progress_container=None):
         if not rows:
             break
 
-        append_dados = dados.append
+        append = dados.append
 
         for row in rows:
             cols = row.find_all("td")
@@ -146,37 +152,31 @@ def buscar_cdr(data_inicio, data_fim, progress_container=None):
                 h, m, s = duracao.split(":")
                 segundos = int(h) * 3600 + int(m) * 60 + int(s)
 
-                append_dados({
+                append({
                     "tecnico": tecnico,
                     "duracao": duracao,
                     "segundos": segundos
                 })
 
         if progress_bar:
-            progresso = min(pagina / total_paginas_estimado, 1.0)
+            progresso = min(pagina / total_estimado, 1.0)
             progress_bar.progress(progresso)
 
         pagina += 1
-        time.sleep(0.2)
+        time.sleep(0.3)
 
     # =====================================================
-    # LIMPA A BARRA (DESAPARECE DA TELA)
+    # LIMPA UI (REMOVE BARRA E TEXTO DA TELA)
     # =====================================================
-    if progress_container:
-        progress_container.empty()
+    if progress_ui:
+        progress_ui.empty()
 
     return dados
 
 
 # =========================================================
-# CACHE (SEM MOSTRAR "RUNNING")
+# KPI
 # =========================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def buscar_cdr_cache(data_inicio, data_fim):
-    return buscar_cdr(data_inicio, data_fim)
-
-
-# ===== KPI =====
 def calcular_kpi(dados, tecnico=None):
     total = 0
     tempo_total = 0
@@ -209,7 +209,9 @@ def calcular_kpi(dados, tecnico=None):
     }
 
 
-# ===== RANKING =====
+# =========================================================
+# RANKING
+# =========================================================
 def gerar_ranking(dados):
     ranking = {}
 
@@ -245,7 +247,9 @@ def gerar_ranking(dados):
     return resultado
 
 
-# ===== INTERFACE =====
+# =========================================================
+# INTERFACE STREAMLIT
+# =========================================================
 
 st.title("📊 Dashboard de ligações - Helpdesk")
 
@@ -267,20 +271,23 @@ with st.form("form"):
     submit = st.form_submit_button("🔍 Consultar")
 
 
-# ===== EXECUÇÃO =====
-
+# =========================================================
+# EXECUÇÃO
+# =========================================================
 if submit:
     try:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
-        else:
-            # container exclusivo para progresso (permite limpar depois)
-            progress_container = st.empty()
 
-            dados = buscar_cdr(str(data_inicio), str(data_fim), progress_container)
+        else:
+            # container exclusivo para progresso (pode ser limpo depois)
+            progress_ui = st.empty()
+
+            dados = buscar_cdr(str(data_inicio), str(data_fim), progress_ui)
 
             if not dados:
                 st.error("Nenhum dado encontrado")
+
             else:
                 resultado = calcular_kpi(dados, tecnico)
                 ranking = gerar_ranking(dados)
@@ -294,14 +301,14 @@ if submit:
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
 
-                    conteudo_alertas = ""
+                    texto = ""
                     for a in resultado["alertas"]:
-                        conteudo_alertas += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
+                        texto += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
 
                     st.markdown(
                         f"""
-                        <div style="background-color: #F7D7DA; padding: 15px; border-radius: 10px; border: 1px solid #f5c2c7; color: #842029;">
-                            {conteudo_alertas}
+                        <div style="background-color:#F7D7DA;padding:15px;border-radius:10px;border:1px solid #f5c2c7;color:#842029;">
+                            {texto}
                         </div>
                         """,
                         unsafe_allow_html=True

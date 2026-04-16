@@ -4,3 +4,5 @@ bs4
 datetime
 beautifulsoup4
 lxml
+io 
+pandas 

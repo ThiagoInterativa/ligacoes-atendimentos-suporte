@@ -92,38 +92,48 @@ def buscar_cdr(data_inicio, data_fim):
     # =========================================================
     # LEITURA DO CSV
     # =========================================================
-    df = pd.read_csv(StringIO(r.text), sep=None, engine="python")
+
+import csv
+
+# =========================================================
+# LEITURA ROBUSTA (TAB + CSV MISTO DO PABX)
+# =========================================================
+
+raw_lines = r.text.splitlines()
+
+# detecta automaticamente separador (TAB funciona aqui)
+reader = csv.DictReader(raw_lines, delimiter="\t")
 
 dados = []
 
-for _, row in df.iterrows():
+for row in reader:
     try:
-        # 🔥 normaliza nomes das colunas (remove espaços invisíveis)
-        row = {str(k).strip(): v for k, v in row.items()}
+        # =====================================================
+        # NORMALIZAÇÃO DAS CHAVES (REMOVE ":" E ESPAÇOS)
+        # =====================================================
+        clean_row = {}
+        for k, v in row.items():
+            if k:
+                key = k.strip().replace(":", "").strip()
+                clean_row[key] = v
 
-        status = str(row.get("Status", "")).strip()
-        tipo = str(row.get("Tipo", "")).strip()
+        status = str(clean_row.get("Status", "")).strip()
+        tipo = str(clean_row.get("Tipo", "")).strip()
+        duracao = str(clean_row.get("Duracao", "00:00:00")).strip()
 
-        # -------------------------------------------------
-        # 🔥 FILTRO CORRIGIDO (NÃO ZERA MAIS OS DADOS)
-        # -------------------------------------------------
-        if status.lower() in ["", "n/a"]:
+        # =====================================================
+        # FILTRO MÍNIMO (NÃO ZERAR DADOS)
+        # =====================================================
+        if duracao == "" or ":" not in duracao:
             continue
 
-        # NÃO filtrar "Entrada/Abandonada/Atendida"
-        # porque o CSV real mistura tudo
-        if tipo == "":
-            continue
-
-        duracao = str(row.get("Duracao", "00:00:00"))
-
-        if ":" not in duracao:
+        if status == "":
             continue
 
         h, m, s = duracao.split(":")
         segundos = int(h) * 3600 + int(m) * 60 + int(s)
 
-        tecnico = str(row.get("Origem", "")).strip()
+        tecnico = str(clean_row.get("Origem", "")).strip()
 
         dados.append({
             "tecnico": tecnico,
@@ -135,7 +145,7 @@ for _, row in df.iterrows():
 
     except:
         continue
-    
+        
 # =========================================================
 # KPI (CORRIGIDO PARA CONSISTÊNCIA)
 # =========================================================

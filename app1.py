@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+import time
 
 # ===== CONFIG =====
 login_url = "https://pabx.evence.com.br/login"
@@ -30,7 +31,7 @@ def login_pabx():
     session = get_session()
 
     r = session.get(login_url, timeout=120)
-    soup = BeautifulSoup(r.text, "lxml")
+    soup = BeautifulSoup(r.text, "html.parser")  # mantém compatibilidade
 
     csrf_input = soup.find("input", {"name": "_token"})
     csrf_token = csrf_input["value"] if csrf_input else ""
@@ -41,7 +42,7 @@ def login_pabx():
         "_token": csrf_token
     }
 
-    response = session.post(login_url, data=payload, timeout=30)
+    response = session.post(login_url, data=payload, timeout=120)
 
     if response.url != login_url:
         return session
@@ -50,12 +51,33 @@ def login_pabx():
 
 
 # =========================================================
-# FUNÇÃO PRINCIPAL (SEM CACHE → permite atualizar progresso)
+# FUNÇÃO DE RETRY (NOVA - NÃO ALTERA LÓGICA EXISTENTE)
+# =========================================================
+def request_com_retry(session, url, params, headers, tentativas=3):
+    """
+    Faz requisição com retry automático em caso de timeout.
+    Evita quebra do sistema em páginas lentas do PABX.
+    """
+    for tentativa in range(tentativas):
+        try:
+            return session.get(url, params=params, headers=headers, timeout=120)
+        except requests.exceptions.Timeout:
+            if tentativa < tentativas - 1:
+                time.sleep(1)  # pequena pausa antes de tentar novamente
+            else:
+                raise
+
+
+# =========================================================
+# FUNÇÃO PRINCIPAL (COM PROGRESSO FUNCIONAL)
 # =========================================================
 def buscar_cdr(data_inicio, data_fim):
     """
-    Busca dados do CDR de forma sequencial (mais estável).
-    Barra de progresso atualiza em tempo real.
+    Busca dados do CDR de forma sequencial.
+    Inclui:
+    - Barra de progresso
+    - Retry automático
+    - Timeout aumentado
     """
 
     session = login_pabx()
@@ -93,28 +115,29 @@ def buscar_cdr(data_inicio, data_fim):
     pagina = 1
 
     # =====================================================
-    # COMPONENTES DE PROGRESSO (FUNCIONAM AGORA)
+    # COMPONENTES DE PROGRESSO
     # =====================================================
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    # 👉 baseado no seu print (66 páginas)
-    total_paginas_estimado = 70  
+    total_paginas_estimado = 70  # ajuste conforme histórico real
 
     while True:
         payload["page"] = pagina
 
         status_text.text(f"📄 Carregando página {pagina} de ~{total_paginas_estimado}")
 
-        r = session.get(cdr_url, params=payload, headers=headers, timeout=120)
+        # =================================================
+        # REQUISIÇÃO COM RETRY (ESTÁVEL)
+        # =================================================
+        r = request_com_retry(session, cdr_url, payload, headers)
 
-        soup = BeautifulSoup(r.text, "lxml")
+        soup = BeautifulSoup(r.text, "html.parser")
         rows = soup.select("table tbody tr")
 
         if not rows:
             break
 
-        # otimização leve
         append_dados = dados.append
 
         for row in rows:
@@ -141,7 +164,9 @@ def buscar_cdr(data_inicio, data_fim):
 
         pagina += 1
 
-    # finalização visual
+        # pequena pausa para não sobrecarregar o PABX
+        time.sleep(0.2)
+
     progress_bar.progress(1.0)
     status_text.text(f"✅ Finalizado! Total de páginas: {pagina - 1}")
 
@@ -149,7 +174,7 @@ def buscar_cdr(data_inicio, data_fim):
 
 
 # =========================================================
-# CACHE DE DADOS (AGORA SEPARADO → NÃO QUEBRA PROGRESSO)
+# CACHE DE DADOS (SEPARADO → NÃO QUEBRA PROGRESSO)
 # =========================================================
 @st.cache_data(ttl=3600)
 def buscar_cdr_cache(data_inicio, data_fim):
@@ -255,7 +280,6 @@ if submit:
             st.error("Preencha as datas")
         else:
             with st.spinner("🔄 Carregando dados, aguarde..."):
-                # usa cache (mas progresso ainda funciona na primeira execução)
                 dados = buscar_cdr_cache(str(data_inicio), str(data_fim))
 
             if not dados:

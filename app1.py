@@ -16,15 +16,14 @@ email = "suporte@interativanet.com.br"
 senha = "smk03657"
 
 
-
 # =========================================================
-# SESSÃO (IMPORTANTE: NÃO USAR CACHE AQUI)
+# SESSÃO (SEM CACHE - EVITA COOKIE INVÁLIDO)
 # =========================================================
 def get_session():
     """
-    🔥 IMPORTANTE:
-    NÃO usar cache de sessão aqui porque o cookie do PABX expira
-    e quebra exportação (causa do 'nenhum dado encontrado')
+    IMPORTANTE:
+    Não usar cache aqui, pois o PABX invalida sessão
+    e isso causa 'nenhum dado encontrado'
     """
     session = requests.Session()
     session.headers.update({
@@ -34,11 +33,15 @@ def get_session():
 
 
 # =========================================================
-# LOGIN
+# LOGIN (CORRIGIDO COM FLUXO REAL DO PABX)
 # =========================================================
 def login_pabx():
     session = get_session()
 
+    # 🔥 IMPORTANTE: abrir raiz primeiro (gera cookies corretos)
+    session.get("https://pabx.evence.com.br/", timeout=120)
+
+    # acessa login page (pega CSRF atualizado)
     r = session.get(login_url, timeout=120)
     soup = BeautifulSoup(r.text, "html.parser")
 
@@ -53,18 +56,18 @@ def login_pabx():
 
     response = session.post(login_url, data=payload, timeout=120)
 
-    if response.url != login_url:
-        return session
-    else:
-        raise Exception("Erro no login")
+    return session
 
 
 # =========================================================
-# BUSCA CDR (CSV + VALIDAÇÃO DE SESSÃO)
+# BUSCA CDR (EXPORT CSV + SESSÃO VALIDA)
 # =========================================================
 def buscar_cdr(data_inicio, data_fim):
 
     session = login_pabx()
+
+    # 🔥 WARMUP (ativa sessão interna do módulo CDR)
+    session.get("https://pabx.evence.com.br/cdr", timeout=120)
 
     params = {
         "ramal_origem": "",
@@ -82,16 +85,23 @@ def buscar_cdr(data_inicio, data_fim):
     }
 
     with st.spinner("📥 Baixando relatório do PABX..."):
-        r = session.get(export_url, params=params, timeout=120)
+        r = session.get(
+            export_url,
+            params=params,
+            headers={
+                "Referer": "https://pabx.evence.com.br/cdr"
+            },
+            timeout=120
+        )
 
     # =========================================================
-    # 🔥 VALIDAÇÃO CRÍTICA (EVITA "NENHUM DADO" FALSO)
+    # 🔥 VALIDAÇÃO CRÍTICA (EVITA HTML DE LOGIN)
     # =========================================================
     if not r.text or "<html" in r.text.lower() or "login" in r.text.lower():
         raise Exception("Exportação falhou: sessão inválida ou login expirado")
 
     # =========================================================
-    # PARSER ROBUSTO DO CSV (TAB / ; / QUEBRADO)
+    # PARSER ROBUSTO CSV (TAB / ; / QUEBRADO)
     # =========================================================
     dados = []
 
@@ -110,7 +120,7 @@ def buscar_cdr(data_inicio, data_fim):
         sep = None
 
     # =========================================================
-    # CASO CSV NORMAL
+    # CASO CSV PADRÃO
     # =========================================================
     if sep:
         cols = [c.strip().replace(":", "") for c in header.split(sep)]
@@ -149,7 +159,7 @@ def buscar_cdr(data_inicio, data_fim):
                 continue
 
     # =========================================================
-    # FALLBACK (CSV QUEBRADO)
+    # FALLBACK CSV QUEBRADO
     # =========================================================
     else:
         for linha in linhas[1:]:
@@ -263,7 +273,7 @@ def gerar_ranking(dados):
 
 
 # =========================================================
-# STREAMLIT UI
+# INTERFACE STREAMLIT
 # =========================================================
 
 st.title("📊 Dashboard de ligações - Helpdesk")
@@ -290,8 +300,8 @@ if submit:
     try:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
-        else:
 
+        else:
             data_inicio_str = data_inicio.strftime("%d-%m-%Y")
             data_fim_str = data_fim.strftime("%d-%m-%Y")
 

@@ -9,8 +9,9 @@ from datetime import datetime
 login_url = "https://pabx.evence.com.br/login"
 cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
 
-email = ""
-senha = ""
+email = "suporte@interativanet.com.br"
+senha = "smk03657"
+
 
 # ===== LOGIN =====
 def login_pabx():

@@ -4,8 +4,7 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from io import StringIO
-import pandas as pd
+import re
 
 # =========================================================
 # CONFIGURAÇÃO
@@ -56,14 +55,14 @@ def login_pabx():
 
 
 # =========================================================
-# BUSCA CDR (CSV DIRETO + FILTRO CORRIGIDO)
+# 🔥 NOVA FUNÇÃO ULTRA ROBUSTA DE LEITURA CSV
 # =========================================================
 def buscar_cdr(data_inicio, data_fim):
     """
     NOVA VERSÃO:
-    - usa export CSV direto
-    - remove paginação
-    - aplica filtros para corrigir explosão de registros
+    - suporta CSV quebrado do PABX
+    - detecta TAB / ; / espaços automaticamente
+    - evita perda de dados (problema anterior)
     """
 
     session = login_pabx()
@@ -90,64 +89,103 @@ def buscar_cdr(data_inicio, data_fim):
         raise Exception("Erro ao baixar CSV")
 
     # =========================================================
-    # LEITURA DO CSV
+    # 🔥 PARSER ROBUSTO (CORREÇÃO PRINCIPAL)
     # =========================================================
+    dados = []
 
-import csv
+    linhas = r.text.splitlines()
+
+    if not linhas:
+        return []
+
+    header = linhas[0]
+
+    # =========================================================
+    # DETECÇÃO DE SEPARADOR
+    # =========================================================
+    if "\t" in header:
+        sep = "\t"
+    elif ";" in header:
+        sep = ";"
+    else:
+        sep = None
+
+    # =========================================================
+    # CASO CSV NORMAL (TAB OU ;)
+    # =========================================================
+    if sep:
+        cols = [c.strip().replace(":", "") for c in header.split(sep)]
+
+        for linha in linhas[1:]:
+            try:
+                valores = linha.split(sep)
+
+                if len(valores) != len(cols):
+                    continue
+
+                row = dict(zip(cols, valores))
+
+                status = str(row.get("Status", "")).strip()
+                tipo = str(row.get("Tipo", "")).strip()
+                duracao = str(row.get("Duracao", "00:00:00")).strip()
+
+                if not duracao or ":" not in duracao:
+                    continue
+
+                if status == "":
+                    continue
+
+                h, m, s = duracao.split(":")
+                segundos = int(h) * 3600 + int(m) * 60 + int(s)
+
+                dados.append({
+                    "tecnico": str(row.get("Origem", "")).strip(),
+                    "duracao": duracao,
+                    "segundos": segundos,
+                    "status": status,
+                    "tipo": tipo
+                })
+
+            except:
+                continue
+
+    # =========================================================
+    # FALLBACK (CASO CSV VENHA QUEBRADO DO PABX)
+    # =========================================================
+    else:
+        for linha in linhas[1:]:
+            try:
+                partes = re.split(r"\s{2,}|\t", linha)
+
+                if len(partes) < 6:
+                    continue
+
+                duracao = partes[4]
+                status = partes[5]
+                tipo = partes[6] if len(partes) > 6 else ""
+
+                if ":" not in duracao:
+                    continue
+
+                h, m, s = duracao.split(":")
+                segundos = int(h) * 3600 + int(m) * 60 + int(s)
+
+                dados.append({
+                    "tecnico": partes[2],
+                    "duracao": duracao,
+                    "segundos": segundos,
+                    "status": status,
+                    "tipo": tipo
+                })
+
+            except:
+                continue
+
+    return dados
+
 
 # =========================================================
-# LEITURA ROBUSTA (TAB + CSV MISTO DO PABX)
-# =========================================================
-
-raw_lines = r.text.splitlines()
-
-# detecta automaticamente separador (TAB funciona aqui)
-reader = csv.DictReader(raw_lines, delimiter="\t")
-
-dados = []
-
-for row in reader:
-    try:
-        # =====================================================
-        # NORMALIZAÇÃO DAS CHAVES (REMOVE ":" E ESPAÇOS)
-        # =====================================================
-        clean_row = {}
-        for k, v in row.items():
-            if k:
-                key = k.strip().replace(":", "").strip()
-                clean_row[key] = v
-
-        status = str(clean_row.get("Status", "")).strip()
-        tipo = str(clean_row.get("Tipo", "")).strip()
-        duracao = str(clean_row.get("Duracao", "00:00:00")).strip()
-
-        # =====================================================
-        # FILTRO MÍNIMO (NÃO ZERAR DADOS)
-        # =====================================================
-        if duracao == "" or ":" not in duracao:
-            continue
-
-        if status == "":
-            continue
-
-        h, m, s = duracao.split(":")
-        segundos = int(h) * 3600 + int(m) * 60 + int(s)
-
-        tecnico = str(clean_row.get("Origem", "")).strip()
-
-        dados.append({
-            "tecnico": tecnico,
-            "duracao": duracao,
-            "segundos": segundos,
-            "status": status,
-            "tipo": tipo
-        })
-
-    except:
-        continue
-        
-# =========================================================
-# KPI (CORRIGIDO PARA CONSISTÊNCIA)
+# KPI (INALTERADO)
 # =========================================================
 def calcular_kpi(dados, tecnico=None):
     total = 0
@@ -156,7 +194,6 @@ def calcular_kpi(dados, tecnico=None):
 
     for d in dados:
 
-        # 🔥 segurança extra contra ruído
         if d.get("status", "").lower() in ["", "n/a"]:
             continue
 
@@ -186,14 +223,13 @@ def calcular_kpi(dados, tecnico=None):
 
 
 # =========================================================
-# RANKING (CORRIGIDO)
+# RANKING (INALTERADO)
 # =========================================================
 def gerar_ranking(dados):
     ranking = {}
 
     for d in dados:
 
-        # 🔥 remove ruído
         if d.get("status", "").lower() in ["", "n/a"]:
             continue
 
@@ -279,9 +315,6 @@ if submit:
                 col2.metric("Tempo Total (h)", resultado["tempo_total"])
                 col3.metric("TMA (min)", resultado["tma"])
 
-                # =================================================
-                # ALERTAS > 20 MIN
-                # =================================================
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
 
@@ -298,9 +331,6 @@ if submit:
                         unsafe_allow_html=True
                     )
 
-                # =================================================
-                # RANKING
-                # =================================================
                 if ranking:
                     st.markdown("### 🏆 Ranking de Técnicos")
                     st.table(ranking)

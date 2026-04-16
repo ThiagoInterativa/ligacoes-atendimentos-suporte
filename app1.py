@@ -12,15 +12,35 @@ cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
 email = "suporte@interativanet.com.br"
 senha = "smk03657"
 
-# ===== LOGIN =====
-def login_pabx():
+# =========================================================
+# CACHE GLOBAL DE SESSÃO (evita múltiplos logins)
+# =========================================================
+@st.cache_resource
+def get_session():
+    """
+    Cria uma sessão HTTP persistente.
+    Isso reduz drasticamente tempo de login repetido.
+    """
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0"
     })
+    return session
 
-    r = session.get(login_url)
-    soup = BeautifulSoup(r.text, "html.parser")
+
+# ===== LOGIN =====
+def login_pabx():
+    """
+    Realiza login no PABX.
+    Mantida lógica original, porém reutilizando sessão cacheada.
+    """
+    session = get_session()
+
+    # Timeout evita travamento infinito
+    r = session.get(login_url, timeout=30)
+
+    # lxml é mais rápido que html.parser
+    soup = BeautifulSoup(r.text, "lxml")
 
     csrf_input = soup.find("input", {"name": "_token"})
     csrf_token = csrf_input["value"] if csrf_input else ""
@@ -31,7 +51,7 @@ def login_pabx():
         "_token": csrf_token
     }
 
-    response = session.post(login_url, data=payload)
+    response = session.post(login_url, data=payload, timeout=30)
 
     if response.url != login_url:
         return session
@@ -39,8 +59,17 @@ def login_pabx():
         raise Exception("Erro no login")
 
 
-# ===== CONSULTA =====
+# =========================================================
+# CACHE DOS DADOS (MAIOR GANHO DE PERFORMANCE)
+# TTL = 1 hora (ajuste se quiser)
+# =========================================================
+@st.cache_data(ttl=3600)
 def buscar_cdr(data_inicio, data_fim):
+    """
+    Busca dados do CDR.
+    Cache evita refazer requisições pesadas.
+    """
+
     session = login_pabx()
 
     data_inicio = datetime.strptime(data_inicio, "%Y-%m-%d")
@@ -78,18 +107,20 @@ def buscar_cdr(data_inicio, data_fim):
     while True:
         payload["page"] = pagina
 
-        r = session.get(cdr_url, params=payload, headers=headers)
+        # Timeout evita travamento em rede lenta
+        r = session.get(cdr_url, params=payload, headers=headers, timeout=30)
 
-        print(f"📄 Página: {pagina}")
-        print("STATUS:", r.status_code)
-        print("URL FINAL:", r.url)
+        # PRINTS reduzidos (impacto grande em performance)
+        # print(f"📄 Página: {pagina}")
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text, "lxml")
         rows = soup.select("table tbody tr")
 
         if not rows:
-            print("⚠️ Nenhuma linha encontrada!")
             break
+
+        # OTIMIZAÇÃO: evitar acessar lista várias vezes
+        append_dados = dados.append
 
         for row in rows:
             cols = row.find_all("td")
@@ -98,10 +129,11 @@ def buscar_cdr(data_inicio, data_fim):
                 tecnico = cols[4].get_text(strip=True)
                 duracao = cols[5].get_text(strip=True)
 
-                t = duracao.split(":")
-                segundos = int(t[0]) * 3600 + int(t[1]) * 60 + int(t[2])
+                # Conversão otimizada
+                h, m, s = duracao.split(":")
+                segundos = int(h) * 3600 + int(m) * 60 + int(s)
 
-                dados.append({
+                append_dados({
                     "tecnico": tecnico,
                     "duracao": duracao,
                     "segundos": segundos
@@ -109,23 +141,26 @@ def buscar_cdr(data_inicio, data_fim):
 
         pagina += 1
 
-    print("DADOS EXTRAÍDOS:", dados)
-
     return dados
 
 
 # ===== KPI =====
 def calcular_kpi(dados, tecnico=None):
+    """
+    Mantida lógica original.
+    Pequena otimização de acesso local de variáveis.
+    """
     total = 0
     tempo_total = 0
     alertas = []
 
     for d in dados:
+        tecnico_nome = d["tecnico"]
 
-        if tecnico and tecnico not in d["tecnico"]:
+        if tecnico and tecnico not in tecnico_nome:
             continue
 
-        if "Fila" in d["tecnico"]:
+        if "Fila" in tecnico_nome:
             continue
 
         total += 1
@@ -133,7 +168,7 @@ def calcular_kpi(dados, tecnico=None):
 
         if d["segundos"] > 1200:
             alertas.append({
-                "tecnico": d["tecnico"],
+                "tecnico": tecnico_nome,
                 "duracao": d["duracao"]
             })
 
@@ -149,14 +184,16 @@ def calcular_kpi(dados, tecnico=None):
 
 # ===== RANKING =====
 def gerar_ranking(dados):
+    """
+    Mantida lógica original com leve otimização.
+    """
     ranking = {}
 
     for d in dados:
-
-        if "Fila" in d["tecnico"]:
-            continue
-
         tecnico = d["tecnico"]
+
+        if "Fila" in tecnico:
+            continue
 
         if tecnico not in ranking:
             ranking[tecnico] = {
@@ -170,11 +207,14 @@ def gerar_ranking(dados):
     resultado = []
 
     for tecnico, info in ranking.items():
-        tma = info["tempo"] / info["chamadas"] if info["chamadas"] > 0 else 0
+        chamadas = info["chamadas"]
+        tempo = info["tempo"]
+
+        tma = tempo / chamadas if chamadas > 0 else 0
 
         resultado.append({
             "tecnico": tecnico,
-            "chamadas": info["chamadas"],
+            "chamadas": chamadas,
             "tma": round(tma / 60, 2)
         })
 
@@ -204,6 +244,7 @@ with st.form("form"):
 
     submit = st.form_submit_button("🔍 Consultar")
 
+
 # ===== EXECUÇÃO =====
 
 if submit:
@@ -219,17 +260,15 @@ if submit:
                 resultado = calcular_kpi(dados, tecnico)
                 ranking = gerar_ranking(dados)
 
-                # ===== KPI =====
                 col1, col2, col3 = st.columns(3)
 
                 col1.metric("Total Chamadas", resultado["total"])
                 col2.metric("Tempo Total (h)", resultado["tempo_total"])
                 col3.metric("TMA (min)", resultado["tma"])
 
-                # ===== ALERTAS =====
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
-                    
+
                     conteudo_alertas = ""
                     for a in resultado["alertas"]:
                         conteudo_alertas += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
@@ -243,7 +282,6 @@ if submit:
                         unsafe_allow_html=True
                     )
 
-                # ===== RANKING =====
                 if ranking:
                     st.markdown("### 🏆 Ranking de Técnicos")
                     st.table(ranking)

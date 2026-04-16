@@ -1,9 +1,10 @@
-
 print("🔥 Iniciando aplicação...")
+
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+import time
 
 # ===== CONFIG =====
 login_url = "https://pabx.evence.com.br/login"
@@ -13,14 +14,25 @@ email = "suporte@interativanet.com.br"
 senha = "smk03657"
 
 
-# ===== LOGIN =====
-def login_pabx():
+# =========================================================
+# SESSÃO REUTILIZÁVEL (evita múltiplos logins)
+# =========================================================
+@st.cache_resource
+def get_session():
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0"
     })
+    return session
 
-    r = session.get(login_url)
+
+# =========================================================
+# LOGIN NO PABX (TIMEOUT 120)
+# =========================================================
+def login_pabx():
+    session = get_session()
+
+    r = session.get(login_url, timeout=120)
     soup = BeautifulSoup(r.text, "html.parser")
 
     csrf_input = soup.find("input", {"name": "_token"})
@@ -32,7 +44,7 @@ def login_pabx():
         "_token": csrf_token
     }
 
-    response = session.post(login_url, data=payload)
+    response = session.post(login_url, data=payload, timeout=120)
 
     if response.url != login_url:
         return session
@@ -40,8 +52,34 @@ def login_pabx():
         raise Exception("Erro no login")
 
 
-# ===== CONSULTA =====
-def buscar_cdr(data_inicio, data_fim):
+# =========================================================
+# RETRY (EVITA TIMEOUT QUEBRAR EXECUÇÃO)
+# =========================================================
+def request_com_retry(session, url, params, headers, tentativas=4):
+    """
+    Faz retry automático em caso de timeout ou falha de rede.
+    """
+    for i in range(tentativas):
+        try:
+            return session.get(url, params=params, headers=headers, timeout=120)
+        except requests.exceptions.Timeout:
+            if i == tentativas - 1:
+                raise
+            time.sleep(2)
+
+
+# =========================================================
+# BUSCA CDR (SEM CACHE PARA NÃO QUEBRAR UI)
+# =========================================================
+def buscar_cdr(data_inicio, data_fim, progress_ui=None):
+    """
+    Função principal de busca.
+    Mantém lógica original e adiciona:
+    - timeout 120
+    - retry
+    - barra de progresso limpa ao final
+    """
+
     session = login_pabx()
 
     data_inicio = datetime.strptime(data_inicio, "%Y-%m-%d")
@@ -76,21 +114,33 @@ def buscar_cdr(data_inicio, data_fim):
     dados = []
     pagina = 1
 
+    # =====================================================
+    # UI DE PROGRESSO (CONTROLADA E REMOVÍVEL)
+    # =====================================================
+    if progress_ui:
+        progress_bar = progress_ui.progress(0)
+        status_text = progress_ui.empty()
+    else:
+        progress_bar = None
+        status_text = None
+
+    total_estimado = 70
+
     while True:
         payload["page"] = pagina
 
-        r = session.get(cdr_url, params=payload, headers=headers)
+        if status_text:
+            status_text.text(f"📄 Processando página {pagina}")
 
-        print(f"📄 Página: {pagina}")
-        print("STATUS:", r.status_code)
-        print("URL FINAL:", r.url)
+        r = request_com_retry(session, cdr_url, payload, headers)
 
         soup = BeautifulSoup(r.text, "html.parser")
         rows = soup.select("table tbody tr")
 
         if not rows:
-            print("⚠️ Nenhuma linha encontrada!")
             break
+
+        append = dados.append
 
         for row in rows:
             cols = row.find_all("td")
@@ -99,23 +149,34 @@ def buscar_cdr(data_inicio, data_fim):
                 tecnico = cols[4].get_text(strip=True)
                 duracao = cols[5].get_text(strip=True)
 
-                t = duracao.split(":")
-                segundos = int(t[0]) * 3600 + int(t[1]) * 60 + int(t[2])
+                h, m, s = duracao.split(":")
+                segundos = int(h) * 3600 + int(m) * 60 + int(s)
 
-                dados.append({
+                append({
                     "tecnico": tecnico,
                     "duracao": duracao,
                     "segundos": segundos
                 })
 
-        pagina += 1
+        if progress_bar:
+            progresso = min(pagina / total_estimado, 1.0)
+            progress_bar.progress(progresso)
 
-    print("DADOS EXTRAÍDOS:", dados)
+        pagina += 1
+        time.sleep(0.3)
+
+    # =====================================================
+    # LIMPA UI (REMOVE BARRA E TEXTO DA TELA)
+    # =====================================================
+    if progress_ui:
+        progress_ui.empty()
 
     return dados
 
 
-# ===== KPI =====
+# =========================================================
+# KPI
+# =========================================================
 def calcular_kpi(dados, tecnico=None):
     total = 0
     tempo_total = 0
@@ -148,7 +209,9 @@ def calcular_kpi(dados, tecnico=None):
     }
 
 
-# ===== RANKING =====
+# =========================================================
+# RANKING
+# =========================================================
 def gerar_ranking(dados):
     ranking = {}
 
@@ -184,7 +247,9 @@ def gerar_ranking(dados):
     return resultado
 
 
-# ===== INTERFACE STREAMLIT =====
+# =========================================================
+# INTERFACE STREAMLIT
+# =========================================================
 
 st.title("📊 Dashboard de ligações - Helpdesk")
 
@@ -205,46 +270,50 @@ with st.form("form"):
 
     submit = st.form_submit_button("🔍 Consultar")
 
-# ===== EXECUÇÃO =====
 
+# =========================================================
+# EXECUÇÃO
+# =========================================================
 if submit:
     try:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
+
         else:
-            dados = buscar_cdr(str(data_inicio), str(data_fim))
+            # container exclusivo para progresso (pode ser limpo depois)
+            progress_ui = st.empty()
+
+            dados = buscar_cdr(str(data_inicio), str(data_fim), progress_ui)
 
             if not dados:
                 st.error("Nenhum dado encontrado")
+
             else:
                 resultado = calcular_kpi(dados, tecnico)
                 ranking = gerar_ranking(dados)
 
-                # ===== KPI =====
                 col1, col2, col3 = st.columns(3)
 
                 col1.metric("Total Chamadas", resultado["total"])
                 col2.metric("Tempo Total (h)", resultado["tempo_total"])
                 col3.metric("TMA (min)", resultado["tma"])
 
-                # ===== ALERTAS =====
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
-                    
-                    conteudo_alertas = ""
+
+                    texto = ""
                     for a in resultado["alertas"]:
-                        conteudo_alertas += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
+                        texto += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
 
                     st.markdown(
                         f"""
-                        <div style="background-color: #F7D7DA; padding: 15px; border-radius: 10px; border: 1px solid #f5c2c7; color: #842029;">
-                            {conteudo_alertas}
+                        <div style="background-color:#F7D7DA;padding:15px;border-radius:10px;border:1px solid #f5c2c7;color:#842029;">
+                            {texto}
                         </div>
                         """,
                         unsafe_allow_html=True
                     )
 
-                # ===== RANKING =====
                 if ranking:
                     st.markdown("### 🏆 Ranking de Técnicos")
                     st.table(ranking)

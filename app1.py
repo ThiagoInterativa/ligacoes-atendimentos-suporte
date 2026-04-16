@@ -29,7 +29,7 @@ def get_session():
 def login_pabx():
     session = get_session()
 
-    r = session.get(login_url, timeout=30)
+    r = session.get(login_url, timeout=120)
     soup = BeautifulSoup(r.text, "lxml")
 
     csrf_input = soup.find("input", {"name": "_token"})
@@ -106,7 +106,7 @@ def buscar_cdr(data_inicio, data_fim):
 
         status_text.text(f"📄 Carregando página {pagina} de ~{total_paginas_estimado}")
 
-        r = session.get(cdr_url, params=payload, headers=headers, timeout=30)
+        r = session.get(cdr_url, params=payload, headers=headers, timeout=120)
 
         soup = BeautifulSoup(r.text, "lxml")
         rows = soup.select("table tbody tr")

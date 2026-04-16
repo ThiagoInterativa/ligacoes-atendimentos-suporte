@@ -92,53 +92,50 @@ def buscar_cdr(data_inicio, data_fim):
     # =========================================================
     # LEITURA DO CSV
     # =========================================================
-    df = pd.read_csv(StringIO(r.text), sep=";")
+    df = pd.read_csv(StringIO(r.text), sep=None, engine="python")
 
-    dados = []
+dados = []
 
-    # =========================================================
-    # 🔥 FILTRO PRINCIPAL (CORRIGE CONTAGEM EXAGERADA)
-    # =========================================================
-    for _, row in df.iterrows():
-        try:
-            status = str(row.get("Status", "")).strip()
-            tipo = str(row.get("Tipo", "")).strip()
+for _, row in df.iterrows():
+    try:
+        # 🔥 normaliza nomes das colunas (remove espaços invisíveis)
+        row = {str(k).strip(): v for k, v in row.items()}
 
-            # -------------------------------------------------
-            # REMOVE REGISTROS INVÁLIDOS / RUÍDO DO CSV
-            # -------------------------------------------------
-            if status.lower() in ["", "n/a"]:
-                continue
+        status = str(row.get("Status", "")).strip()
+        tipo = str(row.get("Tipo", "")).strip()
 
-            # mantém apenas entradas válidas
-            if tipo not in ["Entrada", "Saída"]:
-                continue
-
-            duracao = str(row.get("Duracao", "00:00:00"))
-
-            # ignora formatos inválidos
-            if ":" not in duracao:
-                continue
-
-            h, m, s = duracao.split(":")
-            segundos = int(h) * 3600 + int(m) * 60 + int(s)
-
-            tecnico = str(row.get("Origem", "")).strip()
-
-            dados.append({
-                "tecnico": tecnico,
-                "duracao": duracao,
-                "segundos": segundos,
-                "status": status,
-                "tipo": tipo
-            })
-
-        except:
+        # -------------------------------------------------
+        # 🔥 FILTRO CORRIGIDO (NÃO ZERA MAIS OS DADOS)
+        # -------------------------------------------------
+        if status.lower() in ["", "n/a"]:
             continue
 
-    return dados
+        # NÃO filtrar "Entrada/Abandonada/Atendida"
+        # porque o CSV real mistura tudo
+        if tipo == "":
+            continue
 
+        duracao = str(row.get("Duracao", "00:00:00"))
 
+        if ":" not in duracao:
+            continue
+
+        h, m, s = duracao.split(":")
+        segundos = int(h) * 3600 + int(m) * 60 + int(s)
+
+        tecnico = str(row.get("Origem", "")).strip()
+
+        dados.append({
+            "tecnico": tecnico,
+            "duracao": duracao,
+            "segundos": segundos,
+            "status": status,
+            "tipo": tipo
+        })
+
+    except:
+        continue
+    
 # =========================================================
 # KPI (CORRIGIDO PARA CONSISTÊNCIA)
 # =========================================================

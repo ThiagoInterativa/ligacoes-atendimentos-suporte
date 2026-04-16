@@ -4,18 +4,22 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import time
+from io import StringIO
+import pandas as pd
 
-# ===== CONFIG =====
+# =========================================================
+# CONFIGURAÇÃO
+# =========================================================
 login_url = "https://pabx.evence.com.br/login"
-cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
+
+# 🔥 NOVO ENDPOINT (EXPORTAÇÃO DIRETA - MUITO MAIS RÁPIDO)
+export_url = "https://pabx.evence.com.br/cdr/export/csv"
 
 email = "suporte@interativanet.com.br"
 senha = "smk03657"
 
-
 # =========================================================
-# SESSÃO REUTILIZÁVEL (evita múltiplos logins)
+# SESSÃO REUTILIZÁVEL
 # =========================================================
 @st.cache_resource
 def get_session():
@@ -27,7 +31,7 @@ def get_session():
 
 
 # =========================================================
-# LOGIN NO PABX (TIMEOUT 120)
+# LOGIN (MANTIDO IGUAL)
 # =========================================================
 def login_pabx():
     session = get_session()
@@ -53,34 +57,19 @@ def login_pabx():
 
 
 # =========================================================
-# RETRY (EVITA TIMEOUT QUEBRAR EXECUÇÃO)
-# =========================================================
-def request_com_retry(session, url, params, headers, tentativas=4):
-    """
-    Faz retry automático em caso de timeout ou falha de rede.
-    """
-    for i in range(tentativas):
-        try:
-            return session.get(url, params=params, headers=headers, timeout=120)
-        except requests.exceptions.Timeout:
-            if i == tentativas - 1:
-                raise
-            time.sleep(2)
-
-
-# =========================================================
-# BUSCA CDR (SEM CACHE PARA NÃO QUEBRAR UI)
+# BUSCA CDR (🔥 AGORA VIA CSV - SEM PAGINAÇÃO)
 # =========================================================
 def buscar_cdr(data_inicio, data_fim):
     """
-    NOVO MÉTODO ULTRA RÁPIDO:
-    substitui scraping por download direto CSV
+    NOVA VERSÃO ULTRA RÁPIDA:
+    - remove scraping
+    - remove paginação
+    - usa export CSV direto do PABX
     """
 
     session = login_pabx()
 
-    url = "https://pabx.evence.com.br/cdr/export/csv"
-
+    # parâmetros iguais ao seu sistema original
     params = {
         "ramal_origem": "",
         "numero_origem": "",
@@ -96,98 +85,45 @@ def buscar_cdr(data_inicio, data_fim):
         "data_final": data_fim
     }
 
-    # 🔥 UMA ÚNICA REQUISIÇÃO
-    r = session.get(url, params=params, timeout=120)
+    # =====================================================
+    # UMA ÚNICA REQUISIÇÃO (GANHO MASSIVO DE PERFORMANCE)
+    # =====================================================
+    with st.spinner("📥 Baixando relatório do PABX..."):
+        r = session.get(export_url, params=params, timeout=120)
 
     if r.status_code != 200:
-        raise Exception("Erro ao baixar CSV")
+        raise Exception("Erro ao baixar CSV do PABX")
 
-    # converte CSV para estrutura igual seu sistema atual
-    import pandas as pd
-    from io import StringIO
-
+    # =====================================================
+    # CONVERSÃO CSV → ESTRUTURA DO SEU SISTEMA
+    # =====================================================
     df = pd.read_csv(StringIO(r.text), sep=";")
 
     dados = []
 
     for _, row in df.iterrows():
         try:
-            duracao = row.get("duracao", "00:00:00")
-            t = duracao.split(":")
-            segundos = int(t[0]) * 3600 + int(t[1]) * 60 + int(t[2])
+            tecnico = str(row.get("tecnico", "")).strip()
+            duracao = str(row.get("duracao", "00:00:00"))
+
+            # converte duração para segundos
+            h, m, s = duracao.split(":")
+            segundos = int(h) * 3600 + int(m) * 60 + int(s)
 
             dados.append({
-                "tecnico": row.get("tecnico", ""),
+                "tecnico": tecnico,
                 "duracao": duracao,
                 "segundos": segundos
             })
+
         except:
             continue
-
-    return dados
-    
-    # =====================================================
-    # UI DE PROGRESSO (CONTROLADA E REMOVÍVEL)
-    # =====================================================
-    if progress_ui:
-        progress_bar = progress_ui.progress(0)
-        status_text = progress_ui.empty()
-    else:
-        progress_bar = None
-        status_text = None
-
-    total_estimado = 70
-
-    while True:
-        payload["page"] = pagina
-
-        if status_text:
-            status_text.text(f"📄 Processando página {pagina}")
-
-        r = request_com_retry(session, cdr_url, payload, headers)
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        rows = soup.select("table tbody tr")
-
-        if not rows:
-            break
-
-        append = dados.append
-
-        for row in rows:
-            cols = row.find_all("td")
-
-            if len(cols) >= 6:
-                tecnico = cols[4].get_text(strip=True)
-                duracao = cols[5].get_text(strip=True)
-
-                h, m, s = duracao.split(":")
-                segundos = int(h) * 3600 + int(m) * 60 + int(s)
-
-                append({
-                    "tecnico": tecnico,
-                    "duracao": duracao,
-                    "segundos": segundos
-                })
-
-        if progress_bar:
-            progresso = min(pagina / total_estimado, 1.0)
-            progress_bar.progress(progresso)
-
-        pagina += 1
-        time.sleep(0.3)
-
-    # =====================================================
-    # LIMPA UI (REMOVE BARRA E TEXTO DA TELA)
-    # =====================================================
-    if progress_ui:
-        progress_ui.empty()
 
     return dados
 
 
 # =========================================================
-# KPI
+# KPI (INALTERADO)
 # =========================================================
 def calcular_kpi(dados, tecnico=None):
     total = 0
@@ -222,7 +158,7 @@ def calcular_kpi(dados, tecnico=None):
 
 
 # =========================================================
-# RANKING
+# RANKING (INALTERADO)
 # =========================================================
 def gerar_ranking(dados):
     ranking = {}
@@ -286,16 +222,19 @@ with st.form("form"):
 # =========================================================
 # EXECUÇÃO
 # =========================================================
+
 if submit:
     try:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
 
         else:
-            # container exclusivo para progresso (pode ser limpo depois)
-            progress_ui = st.empty()
+            # conversão de datas (mantido padrão do sistema)
+            data_inicio_str = data_inicio.strftime("%d-%m-%Y")
+            data_fim_str = data_fim.strftime("%d-%m-%Y")
 
-            dados = buscar_cdr(str(data_inicio), str(data_fim), progress_ui)
+            # 🔥 BUSCA ULTRA RÁPIDA (SEM PAGINAÇÃO)
+            dados = buscar_cdr(data_inicio_str, data_fim_str)
 
             if not dados:
                 st.error("Nenhum dado encontrado")

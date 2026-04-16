@@ -4,7 +4,6 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ===== CONFIG =====
 login_url = "https://pabx.evence.com.br/login"
@@ -51,52 +50,12 @@ def login_pabx():
 
 
 # =========================================================
-# FUNÇÃO AUXILIAR PARA PARALELISMO (NÃO ALTERA SUA LÓGICA)
+# FUNÇÃO PRINCIPAL (SEM CACHE → permite atualizar progresso)
 # =========================================================
-def buscar_pagina(session, payload, headers, pagina):
-    """
-    Busca uma página específica.
-    Usada em paralelo para acelerar processamento.
-    """
-    payload_local = payload.copy()
-    payload_local["page"] = pagina
-
-    r = session.get(cdr_url, params=payload_local, headers=headers, timeout=30)
-
-    soup = BeautifulSoup(r.text, "lxml")
-    rows = soup.select("table tbody tr")
-
-    dados_pagina = []
-
-    for row in rows:
-        cols = row.find_all("td")
-
-        if len(cols) >= 6:
-            tecnico = cols[4].get_text(strip=True)
-            duracao = cols[5].get_text(strip=True)
-
-            h, m, s = duracao.split(":")
-            segundos = int(h) * 3600 + int(m) * 60 + int(s)
-
-            dados_pagina.append({
-                "tecnico": tecnico,
-                "duracao": duracao,
-                "segundos": segundos
-            })
-
-    return dados_pagina, len(rows)
-
-
-# =========================================================
-# CACHE DE DADOS
-# =========================================================
-@st.cache_data(ttl=3600)
 def buscar_cdr(data_inicio, data_fim):
     """
-    Versão otimizada:
-    - Paralelismo de páginas
-    - Barra de progresso inteligente
-    - Mantém lógica original
+    Busca dados do CDR de forma sequencial (mais estável).
+    Barra de progresso atualiza em tempo real.
     """
 
     session = login_pabx()
@@ -131,71 +90,70 @@ def buscar_cdr(data_inicio, data_fim):
     }
 
     dados = []
+    pagina = 1
 
     # =====================================================
-    # COMPONENTES DE UI (PROGRESSO)
+    # COMPONENTES DE PROGRESSO (FUNCIONAM AGORA)
     # =====================================================
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    pagina = 1
-    paginas_lote = 5  # quantidade de páginas paralelas por ciclo
-    max_workers = 5   # threads simultâneas (não subir muito)
+    # 👉 baseado no seu print (66 páginas)
+    total_paginas_estimado = 70  
 
-    terminou = False
-    total_processado = 0
-    estimativa_total = 20  # começa com chute e vai ajustando
+    while True:
+        payload["page"] = pagina
 
-    # =====================================================
-    # LOOP PRINCIPAL EM LOTES PARA CONTROLE
-    # =====================================================
-    while not terminou:
+        status_text.text(f"📄 Carregando página {pagina} de ~{total_paginas_estimado}")
 
-        futures = []
+        r = session.get(cdr_url, params=payload, headers=headers, timeout=30)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        soup = BeautifulSoup(r.text, "lxml")
+        rows = soup.select("table tbody tr")
 
-            # dispara lote de páginas
-            for i in range(paginas_lote):
-                futures.append(
-                    executor.submit(
-                        buscar_pagina,
-                        session,
-                        payload,
-                        headers,
-                        pagina + i
-                    )
-                )
+        if not rows:
+            break
 
-            # coleta resultados conforme terminam
-            for future in as_completed(futures):
-                dados_pagina, qtd = future.result()
+        # otimização leve
+        append_dados = dados.append
 
-                if qtd == 0:
-                    terminou = True
-                    break
+        for row in rows:
+            cols = row.find_all("td")
 
-                dados.extend(dados_pagina)
-                total_processado += 1
+            if len(cols) >= 6:
+                tecnico = cols[4].get_text(strip=True)
+                duracao = cols[5].get_text(strip=True)
 
-        pagina += paginas_lote
+                h, m, s = duracao.split(":")
+                segundos = int(h) * 3600 + int(m) * 60 + int(s)
+
+                append_dados({
+                    "tecnico": tecnico,
+                    "duracao": duracao,
+                    "segundos": segundos
+                })
 
         # =================================================
-        # AJUSTE DINÂMICO DE PROGRESSO
+        # ATUALIZA PROGRESSO
         # =================================================
-        if total_processado > estimativa_total * 0.8:
-            estimativa_total *= 2  # aumenta previsão conforme cresce
-
-        progresso = min(total_processado / estimativa_total, 1.0)
-
+        progresso = min(pagina / total_paginas_estimado, 1.0)
         progress_bar.progress(progresso)
-        status_text.text(f"🔄 Processando páginas... ({total_processado} páginas lidas)")
 
-    # Finaliza barra
+        pagina += 1
+
+    # finalização visual
     progress_bar.progress(1.0)
-    status_text.text(f"✅ Concluído! Total de páginas: {total_processado}")
+    status_text.text(f"✅ Finalizado! Total de páginas: {pagina - 1}")
 
     return dados
+
+
+# =========================================================
+# CACHE DE DADOS (AGORA SEPARADO → NÃO QUEBRA PROGRESSO)
+# =========================================================
+@st.cache_data(ttl=3600)
+def buscar_cdr_cache(data_inicio, data_fim):
+    return buscar_cdr(data_inicio, data_fim)
 
 
 # ===== KPI =====
@@ -297,7 +255,8 @@ if submit:
             st.error("Preencha as datas")
         else:
             with st.spinner("🔄 Carregando dados, aguarde..."):
-                dados = buscar_cdr(str(data_inicio), str(data_fim))
+                # usa cache (mas progresso ainda funciona na primeira execução)
+                dados = buscar_cdr_cache(str(data_inicio), str(data_fim))
 
             if not dados:
                 st.error("Nenhum dado encontrado")

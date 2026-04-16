@@ -1,48 +1,25 @@
-print("🔥 Iniciando aplicação...")
 
+print("🔥 Iniciando aplicação...")
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import re
 
-# =========================================================
-# CONFIGURAÇÃO
-# =========================================================
+# ===== CONFIG =====
 login_url = "https://pabx.evence.com.br/login"
-export_url = "https://pabx.evence.com.br/cdr/export/csv"
+cdr_url = "https://pabx.evence.com.br/cdr/pesquisar"
 
-email = "suporte@interativanet.com.br"
-senha = "smk03657"
+email = ""
+senha = ""
 
-
-# =========================================================
-# SESSÃO (SEM CACHE - EVITA COOKIE INVÁLIDO)
-# =========================================================
-def get_session():
-    """
-    IMPORTANTE:
-    Não usar cache aqui, pois o PABX invalida sessão
-    e isso causa 'nenhum dado encontrado'
-    """
+# ===== LOGIN =====
+def login_pabx():
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0"
     })
-    return session
 
-
-# =========================================================
-# LOGIN (CORRIGIDO COM FLUXO REAL DO PABX)
-# =========================================================
-def login_pabx():
-    session = get_session()
-
-    # 🔥 IMPORTANTE: abrir raiz primeiro (gera cookies corretos)
-    session.get("https://pabx.evence.com.br/", timeout=120)
-
-    # acessa login page (pega CSRF atualizado)
-    r = session.get(login_url, timeout=120)
+    r = session.get(login_url)
     soup = BeautifulSoup(r.text, "html.parser")
 
     csrf_input = soup.find("input", {"name": "_token"})
@@ -54,22 +31,28 @@ def login_pabx():
         "_token": csrf_token
     }
 
-    response = session.post(login_url, data=payload, timeout=120)
+    response = session.post(login_url, data=payload)
 
-    return session
+    if response.url != login_url:
+        return session
+    else:
+        raise Exception("Erro no login")
 
 
-# =========================================================
-# BUSCA CDR (EXPORT CSV + SESSÃO VALIDA)
-# =========================================================
+# ===== CONSULTA =====
 def buscar_cdr(data_inicio, data_fim):
-
     session = login_pabx()
 
-    # 🔥 WARMUP (ativa sessão interna do módulo CDR)
-    session.get("https://pabx.evence.com.br/cdr", timeout=120)
+    data_inicio = datetime.strptime(data_inicio, "%Y-%m-%d")
+    data_fim = datetime.strptime(data_fim, "%Y-%m-%d")
 
-    params = {
+    if data_inicio > data_fim:
+        data_inicio, data_fim = data_fim, data_inicio
+
+    data_inicio = data_inicio.strftime("%d-%m-%Y")
+    data_fim = data_fim.strftime("%d-%m-%Y")
+
+    payload = {
         "ramal_origem": "",
         "numero_origem": "",
         "ramal_destino": "",
@@ -84,127 +67,60 @@ def buscar_cdr(data_inicio, data_fim):
         "data_final": data_fim
     }
 
-    with st.spinner("📥 Baixando relatório do PABX..."):
-        r = session.get(
-            export_url,
-            params=params,
-            headers={
-                "Referer": "https://pabx.evence.com.br/cdr"
-            },
-            timeout=120
-        )
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://pabx.evence.com.br/cdr"
+    }
 
-    # =========================================================
-    # 🔥 VALIDAÇÃO CRÍTICA (EVITA HTML DE LOGIN)
-    # =========================================================
-    if not r.text or "<html" in r.text.lower() or "login" in r.text.lower():
-        raise Exception("Exportação falhou: sessão inválida ou login expirado")
-
-    # =========================================================
-    # PARSER ROBUSTO CSV (TAB / ; / QUEBRADO)
-    # =========================================================
     dados = []
+    pagina = 1
 
-    linhas = r.text.splitlines()
-    if not linhas:
-        return []
+    while True:
+        payload["page"] = pagina
 
-    header = linhas[0]
+        r = session.get(cdr_url, params=payload, headers=headers)
 
-    # detecta separador
-    if "\t" in header:
-        sep = "\t"
-    elif ";" in header:
-        sep = ";"
-    else:
-        sep = None
+        print(f"📄 Página: {pagina}")
+        print("STATUS:", r.status_code)
+        print("URL FINAL:", r.url)
 
-    # =========================================================
-    # CASO CSV PADRÃO
-    # =========================================================
-    if sep:
-        cols = [c.strip().replace(":", "") for c in header.split(sep)]
+        soup = BeautifulSoup(r.text, "html.parser")
+        rows = soup.select("table tbody tr")
 
-        for linha in linhas[1:]:
-            try:
-                valores = linha.split(sep)
+        if not rows:
+            print("⚠️ Nenhuma linha encontrada!")
+            break
 
-                if len(valores) != len(cols):
-                    continue
+        for row in rows:
+            cols = row.find_all("td")
 
-                row = dict(zip(cols, valores))
+            if len(cols) >= 6:
+                tecnico = cols[4].get_text(strip=True)
+                duracao = cols[5].get_text(strip=True)
 
-                status = str(row.get("Status", "")).strip()
-                tipo = str(row.get("Tipo", "")).strip()
-                duracao = str(row.get("Duracao", "00:00:00")).strip()
-
-                if ":" not in duracao:
-                    continue
-
-                if status == "":
-                    continue
-
-                h, m, s = duracao.split(":")
-                segundos = int(h) * 3600 + int(m) * 60 + int(s)
+                t = duracao.split(":")
+                segundos = int(t[0]) * 3600 + int(t[1]) * 60 + int(t[2])
 
                 dados.append({
-                    "tecnico": str(row.get("Origem", "")).strip(),
+                    "tecnico": tecnico,
                     "duracao": duracao,
-                    "segundos": segundos,
-                    "status": status,
-                    "tipo": tipo
+                    "segundos": segundos
                 })
 
-            except:
-                continue
+        pagina += 1
 
-    # =========================================================
-    # FALLBACK CSV QUEBRADO
-    # =========================================================
-    else:
-        for linha in linhas[1:]:
-            try:
-                partes = re.split(r"\s{2,}|\t", linha)
-
-                if len(partes) < 6:
-                    continue
-
-                duracao = partes[4]
-                status = partes[5]
-                tipo = partes[6] if len(partes) > 6 else ""
-
-                if ":" not in duracao:
-                    continue
-
-                h, m, s = duracao.split(":")
-                segundos = int(h) * 3600 + int(m) * 60 + int(s)
-
-                dados.append({
-                    "tecnico": partes[2],
-                    "duracao": duracao,
-                    "segundos": segundos,
-                    "status": status,
-                    "tipo": tipo
-                })
-
-            except:
-                continue
+    print("DADOS EXTRAÍDOS:", dados)
 
     return dados
 
 
-# =========================================================
-# KPI (INALTERADO)
-# =========================================================
+# ===== KPI =====
 def calcular_kpi(dados, tecnico=None):
     total = 0
     tempo_total = 0
     alertas = []
 
     for d in dados:
-
-        if d.get("status", "").lower() in ["", "n/a"]:
-            continue
 
         if tecnico and tecnico not in d["tecnico"]:
             continue
@@ -231,16 +147,11 @@ def calcular_kpi(dados, tecnico=None):
     }
 
 
-# =========================================================
-# RANKING (INALTERADO)
-# =========================================================
+# ===== RANKING =====
 def gerar_ranking(dados):
     ranking = {}
 
     for d in dados:
-
-        if d.get("status", "").lower() in ["", "n/a"]:
-            continue
 
         if "Fila" in d["tecnico"]:
             continue
@@ -272,9 +183,7 @@ def gerar_ranking(dados):
     return resultado
 
 
-# =========================================================
-# INTERFACE STREAMLIT
-# =========================================================
+# ===== INTERFACE STREAMLIT =====
 
 st.title("📊 Dashboard de ligações - Helpdesk")
 
@@ -295,17 +204,14 @@ with st.form("form"):
 
     submit = st.form_submit_button("🔍 Consultar")
 
+# ===== EXECUÇÃO =====
 
 if submit:
     try:
         if not data_inicio or not data_fim:
             st.error("Preencha as datas")
-
         else:
-            data_inicio_str = data_inicio.strftime("%d-%m-%Y")
-            data_fim_str = data_fim.strftime("%d-%m-%Y")
-
-            dados = buscar_cdr(data_inicio_str, data_fim_str)
+            dados = buscar_cdr(str(data_inicio), str(data_fim))
 
             if not dados:
                 st.error("Nenhum dado encontrado")
@@ -313,28 +219,31 @@ if submit:
                 resultado = calcular_kpi(dados, tecnico)
                 ranking = gerar_ranking(dados)
 
+                # ===== KPI =====
                 col1, col2, col3 = st.columns(3)
 
                 col1.metric("Total Chamadas", resultado["total"])
                 col2.metric("Tempo Total (h)", resultado["tempo_total"])
                 col3.metric("TMA (min)", resultado["tma"])
 
+                # ===== ALERTAS =====
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
-
-                    texto = ""
+                    
+                    conteudo_alertas = ""
                     for a in resultado["alertas"]:
-                        texto += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
+                        conteudo_alertas += f"<div>Técnico: <b>{a['tecnico']}</b> - Duração: <b>{a['duracao']}</b></div>"
 
                     st.markdown(
                         f"""
-                        <div style="background-color:#F7D7DA;padding:15px;border-radius:10px;border:1px solid #f5c2c7;color:#842029;">
-                            {texto}
+                        <div style="background-color: #F7D7DA; padding: 15px; border-radius: 10px; border: 1px solid #f5c2c7; color: #842029;">
+                            {conteudo_alertas}
                         </div>
                         """,
                         unsafe_allow_html=True
                     )
 
+                # ===== RANKING =====
                 if ranking:
                     st.markdown("### 🏆 Ranking de Técnicos")
                     st.table(ranking)

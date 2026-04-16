@@ -71,27 +71,17 @@ def request_com_retry(session, url, params, headers, tentativas=4):
 # =========================================================
 # BUSCA CDR (SEM CACHE PARA NÃO QUEBRAR UI)
 # =========================================================
-def buscar_cdr(data_inicio, data_fim, progress_ui=None):
+def buscar_cdr(data_inicio, data_fim):
     """
-    Função principal de busca.
-    Mantém lógica original e adiciona:
-    - timeout 120
-    - retry
-    - barra de progresso limpa ao final
+    NOVO MÉTODO ULTRA RÁPIDO:
+    substitui scraping por download direto CSV
     """
 
     session = login_pabx()
 
-    data_inicio = datetime.strptime(data_inicio, "%Y-%m-%d")
-    data_fim = datetime.strptime(data_fim, "%Y-%m-%d")
+    url = "https://pabx.evence.com.br/cdr/export/csv"
 
-    if data_inicio > data_fim:
-        data_inicio, data_fim = data_fim, data_inicio
-
-    data_inicio = data_inicio.strftime("%d-%m-%Y")
-    data_fim = data_fim.strftime("%d-%m-%Y")
-
-    payload = {
+    params = {
         "ramal_origem": "",
         "numero_origem": "",
         "ramal_destino": "",
@@ -106,14 +96,36 @@ def buscar_cdr(data_inicio, data_fim, progress_ui=None):
         "data_final": data_fim
     }
 
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://pabx.evence.com.br/cdr"
-    }
+    # 🔥 UMA ÚNICA REQUISIÇÃO
+    r = session.get(url, params=params, timeout=120)
+
+    if r.status_code != 200:
+        raise Exception("Erro ao baixar CSV")
+
+    # converte CSV para estrutura igual seu sistema atual
+    import pandas as pd
+    from io import StringIO
+
+    df = pd.read_csv(StringIO(r.text), sep=";")
 
     dados = []
-    pagina = 1
 
+    for _, row in df.iterrows():
+        try:
+            duracao = row.get("duracao", "00:00:00")
+            t = duracao.split(":")
+            segundos = int(t[0]) * 3600 + int(t[1]) * 60 + int(t[2])
+
+            dados.append({
+                "tecnico": row.get("tecnico", ""),
+                "duracao": duracao,
+                "segundos": segundos
+            })
+        except:
+            continue
+
+    return dados
+    
     # =====================================================
     # UI DE PROGRESSO (CONTROLADA E REMOVÍVEL)
     # =====================================================

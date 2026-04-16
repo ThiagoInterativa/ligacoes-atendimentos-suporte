@@ -11,12 +11,11 @@ import pandas as pd
 # CONFIGURAÇÃO
 # =========================================================
 login_url = "https://pabx.evence.com.br/login"
-
-# 🔥 NOVO ENDPOINT (EXPORTAÇÃO DIRETA - MUITO MAIS RÁPIDO)
 export_url = "https://pabx.evence.com.br/cdr/export/csv"
 
 email = "suporte@interativanet.com.br"
 senha = "smk03657"
+
 
 # =========================================================
 # SESSÃO REUTILIZÁVEL
@@ -31,7 +30,7 @@ def get_session():
 
 
 # =========================================================
-# LOGIN (MANTIDO IGUAL)
+# LOGIN (MANTIDO ORIGINAL)
 # =========================================================
 def login_pabx():
     session = get_session()
@@ -57,19 +56,18 @@ def login_pabx():
 
 
 # =========================================================
-# BUSCA CDR (🔥 AGORA VIA CSV - SEM PAGINAÇÃO)
+# BUSCA CDR (CSV DIRETO + FILTRO CORRIGIDO)
 # =========================================================
 def buscar_cdr(data_inicio, data_fim):
     """
-    NOVA VERSÃO ULTRA RÁPIDA:
-    - remove scraping
+    NOVA VERSÃO:
+    - usa export CSV direto
     - remove paginação
-    - usa export CSV direto do PABX
+    - aplica filtros para corrigir explosão de registros
     """
 
     session = login_pabx()
 
-    # parâmetros iguais ao seu sistema original
     params = {
         "ramal_origem": "",
         "numero_origem": "",
@@ -85,35 +83,54 @@ def buscar_cdr(data_inicio, data_fim):
         "data_final": data_fim
     }
 
-    # =====================================================
-    # UMA ÚNICA REQUISIÇÃO (GANHO MASSIVO DE PERFORMANCE)
-    # =====================================================
     with st.spinner("📥 Baixando relatório do PABX..."):
         r = session.get(export_url, params=params, timeout=120)
 
     if r.status_code != 200:
-        raise Exception("Erro ao baixar CSV do PABX")
+        raise Exception("Erro ao baixar CSV")
 
-    # =====================================================
-    # CONVERSÃO CSV → ESTRUTURA DO SEU SISTEMA
-    # =====================================================
+    # =========================================================
+    # LEITURA DO CSV
+    # =========================================================
     df = pd.read_csv(StringIO(r.text), sep=";")
 
     dados = []
 
+    # =========================================================
+    # 🔥 FILTRO PRINCIPAL (CORRIGE CONTAGEM EXAGERADA)
+    # =========================================================
     for _, row in df.iterrows():
         try:
-            tecnico = str(row.get("tecnico", "")).strip()
-            duracao = str(row.get("duracao", "00:00:00"))
+            status = str(row.get("Status", "")).strip()
+            tipo = str(row.get("Tipo", "")).strip()
 
-            # converte duração para segundos
+            # -------------------------------------------------
+            # REMOVE REGISTROS INVÁLIDOS / RUÍDO DO CSV
+            # -------------------------------------------------
+            if status.lower() in ["", "n/a"]:
+                continue
+
+            # mantém apenas entradas válidas
+            if tipo not in ["Entrada", "Saída"]:
+                continue
+
+            duracao = str(row.get("Duracao", "00:00:00"))
+
+            # ignora formatos inválidos
+            if ":" not in duracao:
+                continue
+
             h, m, s = duracao.split(":")
             segundos = int(h) * 3600 + int(m) * 60 + int(s)
+
+            tecnico = str(row.get("Origem", "")).strip()
 
             dados.append({
                 "tecnico": tecnico,
                 "duracao": duracao,
-                "segundos": segundos
+                "segundos": segundos,
+                "status": status,
+                "tipo": tipo
             })
 
         except:
@@ -123,7 +140,7 @@ def buscar_cdr(data_inicio, data_fim):
 
 
 # =========================================================
-# KPI (INALTERADO)
+# KPI (CORRIGIDO PARA CONSISTÊNCIA)
 # =========================================================
 def calcular_kpi(dados, tecnico=None):
     total = 0
@@ -131,6 +148,10 @@ def calcular_kpi(dados, tecnico=None):
     alertas = []
 
     for d in dados:
+
+        # 🔥 segurança extra contra ruído
+        if d.get("status", "").lower() in ["", "n/a"]:
+            continue
 
         if tecnico and tecnico not in d["tecnico"]:
             continue
@@ -158,12 +179,16 @@ def calcular_kpi(dados, tecnico=None):
 
 
 # =========================================================
-# RANKING (INALTERADO)
+# RANKING (CORRIGIDO)
 # =========================================================
 def gerar_ranking(dados):
     ranking = {}
 
     for d in dados:
+
+        # 🔥 remove ruído
+        if d.get("status", "").lower() in ["", "n/a"]:
+            continue
 
         if "Fila" in d["tecnico"]:
             continue
@@ -229,11 +254,9 @@ if submit:
             st.error("Preencha as datas")
 
         else:
-            # conversão de datas (mantido padrão do sistema)
             data_inicio_str = data_inicio.strftime("%d-%m-%Y")
             data_fim_str = data_fim.strftime("%d-%m-%Y")
 
-            # 🔥 BUSCA ULTRA RÁPIDA (SEM PAGINAÇÃO)
             dados = buscar_cdr(data_inicio_str, data_fim_str)
 
             if not dados:
@@ -249,6 +272,9 @@ if submit:
                 col2.metric("Tempo Total (h)", resultado["tempo_total"])
                 col3.metric("TMA (min)", resultado["tma"])
 
+                # =================================================
+                # ALERTAS > 20 MIN
+                # =================================================
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
 
@@ -265,6 +291,9 @@ if submit:
                         unsafe_allow_html=True
                     )
 
+                # =================================================
+                # RANKING
+                # =================================================
                 if ranking:
                     st.markdown("### 🏆 Ranking de Técnicos")
                     st.table(ranking)

@@ -201,14 +201,30 @@ def calcular_kpi(dados, tecnico=None):
 
     tma = tempo_total / total if total > 0 else 0
 
+    # =========================================================
+    # AJUSTE: conversão de tempo total para formato hh:mm
+    # =========================================================
+
+    # tempo total em horas (decimal) - já existia
+    tempo_total_horas = tempo_total / 3600
+
+    # NOVO: converter para horas e minutos
+    horas = int(tempo_total // 3600)
+    minutos = int((tempo_total % 3600) // 60)
+
+    # formatar como string hh:mm
+    tempo_formatado = f"{horas:02d}:{minutos:02d}"
+
+    # =========================================================
+
     return {
         "total": total,
-        "tempo_total": round(tempo_total / 3600, 2),
+        "tempo_total": round(tempo_total_horas, 2),  # mantém o formato original
+        "tempo_total_formatado": tempo_formatado,   # NOVO campo (hh:mm)
         "tma": round(tma / 60, 2),
         "alertas": alertas
     }
-
-
+    
 # =========================================================
 # RANKING
 # =========================================================

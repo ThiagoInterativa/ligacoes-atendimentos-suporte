@@ -173,7 +173,6 @@ def buscar_cdr(data_inicio, data_fim, progress_ui=None):
 
     return dados
 
-
 # =========================================================
 # KPI
 # =========================================================
@@ -205,26 +204,36 @@ def calcular_kpi(dados, tecnico=None):
     # AJUSTE: conversão de tempo total para formato hh:mm
     # =========================================================
 
-    # tempo total em horas (decimal) - já existia
     tempo_total_horas = tempo_total / 3600
 
-    # NOVO: converter para horas e minutos
     horas = int(tempo_total // 3600)
     minutos = int((tempo_total % 3600) // 60)
 
-    # formatar como string hh:mm
     tempo_formatado = f"{horas:02d}:{minutos:02d}"
+
+    # =========================================================
+    # NOVO AJUSTE: TMA em mm:ss com arredondamento correto
+    # =========================================================
+
+    tma_seg_total = int(round(tma))  # <-- garante precisão correta
+
+    tma_minutos = tma_seg_total // 60
+    tma_segundos = tma_seg_total % 60
+
+    tma_formatado = f"{tma_minutos:02d}:{tma_segundos:02d}"
 
     # =========================================================
 
     return {
         "total": total,
-        "tempo_total": round(tempo_total_horas, 2),  # mantém o formato original
-        "tempo_total_formatado": tempo_formatado,   # NOVO campo (hh:mm)
-        "tma": round(tma / 60, 2),
+        "tempo_total": round(tempo_total_horas, 2),
+        "tempo_total_formatado": tempo_formatado,
+        "tma": round(tma / 60, 2),  # mantém original
+        "tma_formatado": tma_formatado,  # NOVO
         "alertas": alertas
     }
-    
+
+
 # =========================================================
 # RANKING
 # =========================================================
@@ -252,10 +261,24 @@ def gerar_ranking(dados):
     for tecnico, info in ranking.items():
         tma = info["tempo"] / info["chamadas"] if info["chamadas"] > 0 else 0
 
+        # =========================================================
+        # NOVO AJUSTE: TMA ranking em mm:ss com arredondamento
+        # =========================================================
+
+        tma_seg_total = int(round(tma))
+
+        tma_minutos = tma_seg_total // 60
+        tma_segundos = tma_seg_total % 60
+
+        tma_formatado = f"{tma_minutos:02d}:{tma_segundos:02d}"
+
+        # =========================================================
+
         resultado.append({
             "tecnico": tecnico,
             "chamadas": info["chamadas"],
-            "tma": round(tma / 60, 2)
+            "tma": round(tma / 60, 2),  # mantém original
+            "tma_formatado": tma_formatado  # NOVO
         })
 
     resultado.sort(key=lambda x: x["chamadas"], reverse=True)
@@ -296,7 +319,6 @@ if submit:
             st.error("Preencha as datas")
 
         else:
-            # container exclusivo para progresso (pode ser limpo depois)
             progress_ui = st.empty()
 
             dados = buscar_cdr(str(data_inicio), str(data_fim), progress_ui)
@@ -311,8 +333,14 @@ if submit:
                 col1, col2, col3 = st.columns(3)
 
                 col1.metric("Total Chamadas", resultado["total"])
+
+                # Tempo total já formatado
                 col2.metric("Tempo Total (h)", resultado["tempo_total_formatado"])
-                col3.metric("TMA (min)", resultado["tma"])
+
+                # =========================================================
+                # AJUSTE: mostrar TMA em mm:ss
+                # =========================================================
+                col3.metric("TMA", resultado["tma_formatado"])
 
                 if resultado["alertas"]:
                     st.markdown("### 🚨 Chamadas acima de 20 minutos")
@@ -332,7 +360,20 @@ if submit:
 
                 if ranking:
                     st.markdown("### 🏆 Ranking de Técnicos")
-                    st.table(ranking)
+
+                    # =========================================================
+                    # AJUSTE: mostrar TMA formatado no ranking
+                    # =========================================================
+                    ranking_formatado = [
+                        {
+                            "tecnico": r["tecnico"],
+                            "chamadas": r["chamadas"],
+                            "tma": r["tma_formatado"]
+                        }
+                        for r in ranking
+                    ]
+
+                    st.table(ranking_formatado)
 
     except Exception as e:
         st.error(f"Ocorreu um erro: {e}")

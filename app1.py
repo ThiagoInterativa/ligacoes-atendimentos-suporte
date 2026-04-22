@@ -311,7 +311,7 @@ if submit:
                 col1, col2, col3 = st.columns(3)
 
                 col1.metric("Total Chamadas", resultado["total"])
-                col2.metric("Tempo Total (h)", resultado["tempo_total"])
+                col2.metric("Tempo Total (h)", resultado["tempo_total_formatado"])
                 col3.metric("TMA (min)", resultado["tma"])
 
                 if resultado["alertas"]:

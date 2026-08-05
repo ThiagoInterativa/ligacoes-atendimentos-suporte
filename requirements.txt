@@ -1,5 +1,7 @@
-streamlit
+streamlit==1.38.0
 requests
 beautifulsoup4
 pandas
 lxml
+starlette==0.37.2
+uvicorn==0.30.6
